@@ -1,0 +1,286 @@
+LO3
+
+================================================================
+INTRO TO DEVOPS - EXAM CHEAT SHEET
+Student: Zvonimir Madarac
+================================================================
+
+================================================================
+LO3 - CONTAINER DEPLOYMENT WITH SECURITY
+================================================================
+
+SCENARIO: Deploy two containers (e.g. MySQL + WordPress) with
+secure networking so they can communicate but MySQL is never
+exposed to the outside world.
+
+----------------------------------------------------------------
+KEY CONCEPT: NETWORK SEGMENTATION
+----------------------------------------------------------------
+Use TWO separate networks:
+  - frontend  --> WordPress <--> outside world (port 80/8080)
+  - backend   --> WordPress <--> MySQL ONLY (MySQL never exposed)
+
+MySQL sits ONLY on backend network.
+WordPress sits on BOTH networks (bridge between them).
+This means MySQL is COMPLETELY ISOLATED from internet.
+
+----------------------------------------------------------------
+STEP 1 - CREATE NETWORKS
+----------------------------------------------------------------
+podman network create frontend
+podman network create backend
+
+----------------------------------------------------------------
+STEP 2 - START MySQL (backend only, NO port exposure)
+----------------------------------------------------------------
+podman run -d \
+  --name mysql \
+  --network backend \
+  -e MYSQL_ROOT_PASSWORD=StrongRootPass123! \
+  -e MYSQL_DATABASE=wordpress \
+  -e MYSQL_USER=wpuser \
+  -e MYSQL_PASSWORD=StrongWpPass123! \
+  --restart unless-stopped \
+  mysql:8 \
+  --default-authentication-plugin=mysql_native_password
+
+SECURITY NOTES:
+  - NO -p flag = MySQL has zero port exposure to host/internet
+  - Only on backend network = only WordPress can reach it
+  - Non-root DB user (wpuser) = WordPress never uses root
+
+----------------------------------------------------------------
+STEP 3 - START WordPress (backend + frontend)
+----------------------------------------------------------------
+podman run -d \
+  --name wordpress \
+  --network backend \
+  -e WORDPRESS_DB_HOST=mysql \
+  -e WORDPRESS_DB_NAME=wordpress \
+  -e WORDPRESS_DB_USER=wpuser \
+  -e WORDPRESS_DB_PASSWORD=StrongWpPass123! \
+  -p 8080:80 \
+  --restart unless-stopped \
+  wordpress:latest
+
+# Connect WordPress to frontend network too
+podman network connect frontend wordpress
+
+----------------------------------------------------------------
+STEP 4 - VERIFY
+----------------------------------------------------------------
+podman ps
+podman network inspect backend
+# Open http://localhost:8080 - WordPress setup screen
+
+----------------------------------------------------------------
+ARCHITECTURE
+----------------------------------------------------------------
+
+Internet/Browser
+      |
+      | port 8080
+      v
++-------------+    backend network    +-----------+
+|  WordPress  | ------------------->  |   MySQL   |
+| (frontend + |                       | (backend  |
+|   backend)  |                       |   only)   |
++-------------+                       +-----------+
+      |
+ frontend network
+      |
+ (future load balancer / more WordPress replicas)
+
+----------------------------------------------------------------
+PODMAN-COMPOSE.YML (ready for scaling)
+----------------------------------------------------------------
+version: "3.8"
+
+services:
+  mysql:
+    image: mysql:8
+    container_name: mysql
+    networks:
+      - backend
+    environment:
+      MYSQL_ROOT_PASSWORD: StrongRootPass123!
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wpuser
+      MYSQL_PASSWORD: StrongWpPass123!
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+    restart: unless-stopped
+    # NO ports: section intentionally - MySQL never exposed
+
+  wordpress:
+    image: wordpress:latest
+    networks:
+      - frontend
+      - backend
+    environment:
+      WORDPRESS_DB_HOST: mysql
+      WORDPRESS_DB_NAME: wordpress
+      WORDPRESS_DB_USER: wpuser
+      WORDPRESS_DB_PASSWORD: StrongWpPass123!
+    ports:
+      - "8080:80"
+    depends_on:
+      - mysql
+    restart: unless-stopped
+    # Scale with: podman-compose up --scale wordpress=3
+
+volumes:
+  mysql_data:
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true   # EXTRA SECURITY: no internet access on backend
+                     # even if MySQL compromised, cannot call out
+
+----------------------------------------------------------------
+SCALING (future instances)
+----------------------------------------------------------------
+# With podman-compose:
+podman-compose up --scale wordpress=3
+
+# With Docker Swarm:
+docker service scale wordpress_wordpress=3
+
+# With Kubernetes:
+kubectl scale deployment wordpress --replicas=3
+
+----------------------------------------------------------------
+KEY SECURITY DECISIONS TO MENTION IN EXAM
+----------------------------------------------------------------
+1. MySQL has NO port mapping (-p) = not reachable from outside
+2. Backend network has internal: true = no internet access
+3. Non-root DB user = limited credentials for app
+4. Two separate networks = network segmentation
+5. Named volume for MySQL data = data persists safely
+6. depends_on = WordPress waits for MySQL to be ready
+
+================================================================
+LO3_D - EVALUATE CONTAINER SECURITY ADVANTAGES (4 points)
+================================================================
+
+Write these 5 points in the exam:
+
+1. NETWORK ISOLATION
+   Containers can be placed on separate networks ensuring
+   sensitive services (databases) are never reachable from
+   outside. MySQL has no port mapping and sits only on the
+   internal backend network. Even if WordPress is compromised,
+   MySQL cannot be reached from the internet.
+
+2. PRINCIPLE OF LEAST PRIVILEGE
+   Each container runs only what it needs. MySQL runs as a
+   dedicated user (wpuser) with no root access granted to the
+   application. Container images contain only the necessary
+   runtime - no SSH server, no extra shell tools - reducing
+   the attack surface significantly.
+
+3. IMMUTABILITY AND CONSISTENCY
+   Container images are immutable - once built, the environment
+   cannot drift. This prevents configuration-based
+   vulnerabilities that accumulate over time on traditional VMs.
+   If a container is compromised, destroy it and replace with
+   a clean image instantly.
+
+4. PROCESS ISOLATION
+   Each container has its own PID namespace, filesystem, and
+   network namespace. A vulnerability exploited inside one
+   container cannot directly access processes or files in
+   another container or the host system.
+
+5. RAPID PATCHING
+   When a security vulnerability is found (e.g. in MySQL base
+   image), the fix is pulling the updated image and restarting
+   the container. No complex OS patching, no manual updates,
+   no downtime risk from patching procedures.
+
+================================================================
+KEY TERMS - MEMORIZE THESE
+================================================================
+
+Network segmentation  = separating containers into different
+                        networks by function/trust level
+
+internal: true        = network with NO internet access,
+                        maximum isolation for backend services
+
+No port mapping       = container not reachable from host
+                        or internet at all
+
+Non-root DB user      = app uses limited credentials,
+                        not MySQL root
+
+Immutable image       = container cant be changed after build,
+                        consistent and auditable
+
+Attack surface        = everything exposed that could be
+                        exploited - containers minimize this
+
+Principle of least    = give each service/user only the
+privilege             = minimum access it needs to function
+
+================================================================
+COMMON EXAM VARIATIONS - SAME PATTERN DIFFERENT SERVICES
+================================================================
+
+Instead of WordPress + MySQL, exam might use:
+  - Nginx + MySQL
+  - Node.js app + PostgreSQL
+  - Django + MongoDB
+  - Any app + any database
+
+THE PATTERN IS ALWAYS THE SAME:
+  1. Create frontend and backend networks
+  2. DB goes on backend ONLY, no -p flag
+  3. App goes on both networks
+  4. backend network gets internal: true
+  5. App connects to DB using container name as hostname
+  6. Use non-root DB user for app credentials
+  7. Use named volume for DB data persistence
+
+HOSTNAME RULE: containers on same network find each other
+by container name. So DB_HOST=mysql works because the
+container is named mysql.
+
+================================================================
+USEFUL COMMANDS FOR EXAM
+================================================================
+
+# List all containers (running + stopped)
+podman ps -a
+
+# Check container logs
+podman logs <container_name>
+
+# Inspect a network (see which containers are on it)
+podman network inspect <network_name>
+
+# List all networks
+podman network ls
+
+# Stop and remove everything cleanly
+podman stop mysql wordpress
+podman rm mysql wordpress
+podman network rm frontend backend
+
+# Check if app can reach DB (exec into app container)
+podman exec -it wordpress bash
+# then inside: curl mysql:3306
+
+# Run compose file
+podman-compose up -d
+
+# Scale with compose
+podman-compose up --scale wordpress=3 -d
+
+================================================================
+END OF CHEAT SHEET
+================================================================
