@@ -1,0 +1,443 @@
+Possible LO3
+
+================================================================
+DEVOPS EXAM - VARIATIONS & PATTERNS CHEAT SHEET
+Student: Zvonimir Madarac
+================================================================
+
+================================================================
+THE CORE PATTERN - ALWAYS THE SAME
+================================================================
+
+No matter what services the professor uses, these steps NEVER change:
+
+1. Create two networks (frontend + backend)
+2. DB on backend ONLY - no -p flag ever
+3. App on BOTH networks
+4. backend network gets internal: true in compose
+5. Non-root DB user - never use root for app
+6. Container name = hostname (--name mysql means DB_HOST=mysql)
+7. Named volume for DB data persistence
+
+================================================================
+VARIATION 1 - DIFFERENT APP, SAME MYSQL
+================================================================
+
+--- Nginx + MySQL ---
+podman network create frontend
+podman network create backend
+
+podman run -d \
+  --name mysql \
+  --network backend \
+  -e MYSQL_ROOT_PASSWORD=StrongRootPass123! \
+  -e MYSQL_DATABASE=appdb \
+  -e MYSQL_USER=appuser \
+  -e MYSQL_PASSWORD=StrongPass123! \
+  -v mysql_data:/var/lib/mysql \
+  --restart unless-stopped \
+  mysql:8
+
+podman run -d \
+  --name nginx \
+  --network backend \
+  -p 8080:80 \
+  --restart unless-stopped \
+  nginx:latest
+
+podman network connect frontend nginx
+
+--- phpMyAdmin + MySQL ---
+podman run -d \
+  --name mysql \
+  --network backend \
+  -e MYSQL_ROOT_PASSWORD=StrongRootPass123! \
+  -e MYSQL_DATABASE=appdb \
+  -e MYSQL_USER=appuser \
+  -e MYSQL_PASSWORD=StrongPass123! \
+  -v mysql_data:/var/lib/mysql \
+  --restart unless-stopped \
+  mysql:8
+
+podman run -d \
+  --name phpmyadmin \
+  --network backend \
+  -e PMA_HOST=mysql \
+  -e PMA_USER=appuser \
+  -e PMA_PASSWORD=StrongPass123! \
+  -p 8080:80 \
+  --restart unless-stopped \
+  phpmyadmin:latest
+
+podman network connect frontend phpmyadmin
+
+================================================================
+VARIATION 2 - DIFFERENT DATABASE
+================================================================
+
+--- WordPress + PostgreSQL ---
+podman network create frontend
+podman network create backend
+
+podman run -d \
+  --name postgres \
+  --network backend \
+  -e POSTGRES_DB=wordpress \
+  -e POSTGRES_USER=wpuser \
+  -e POSTGRES_PASSWORD=StrongPass123! \
+  -v postgres_data:/var/lib/postgresql/data \
+  --restart unless-stopped \
+  postgres:15
+
+podman run -d \
+  --name wordpress \
+  --network backend \
+  -e WORDPRESS_DB_HOST=postgres \
+  -e WORDPRESS_DB_NAME=wordpress \
+  -e WORDPRESS_DB_USER=wpuser \
+  -e WORDPRESS_DB_PASSWORD=StrongPass123! \
+  -p 8080:80 \
+  --restart unless-stopped \
+  wordpress:latest
+
+podman network connect frontend wordpress
+
+--- App + MongoDB ---
+podman run -d \
+  --name mongodb \
+  --network backend \
+  -e MONGO_INITDB_ROOT_USERNAME=admin \
+  -e MONGO_INITDB_ROOT_PASSWORD=StrongPass123! \
+  -e MONGO_INITDB_DATABASE=appdb \
+  -v mongo_data:/data/db \
+  --restart unless-stopped \
+  mongo:7
+
+# App connects to MongoDB using:
+# MONGO_URI=mongodb://admin:StrongPass123!@mongodb:27017/appdb
+
+================================================================
+VARIATION 3 - THREE CONTAINERS (reverse proxy added)
+================================================================
+
+Architecture:
+Internet --> Nginx (frontend only) --> WordPress (frontend+backend) --> MySQL (backend only)
+
+podman network create frontend
+podman network create backend
+
+# MySQL - backend only
+podman run -d \
+  --name mysql \
+  --network backend \
+  -e MYSQL_ROOT_PASSWORD=StrongRootPass123! \
+  -e MYSQL_DATABASE=wordpress \
+  -e MYSQL_USER=wpuser \
+  -e MYSQL_PASSWORD=StrongPass123! \
+  -v mysql_data:/var/lib/mysql \
+  --restart unless-stopped \
+  mysql:8
+
+# WordPress - backend only (NOT exposed to internet directly)
+podman run -d \
+  --name wordpress \
+  --network backend \
+  -e WORDPRESS_DB_HOST=mysql \
+  -e WORDPRESS_DB_NAME=wordpress \
+  -e WORDPRESS_DB_USER=wpuser \
+  -e WORDPRESS_DB_PASSWORD=StrongPass123! \
+  --restart unless-stopped \
+  wordpress:latest
+
+podman network connect frontend wordpress
+
+# Nginx reverse proxy - frontend only, exposed to internet
+podman run -d \
+  --name nginx \
+  --network frontend \
+  -p 80:80 \
+  --restart unless-stopped \
+  nginx:latest
+
+================================================================
+VARIATION 4 - VOLUMES (data persistence)
+================================================================
+
+"Ensure database data persists across container restarts"
+
+Just add to MySQL run command:
+  -v mysql_data:/var/lib/mysql
+
+For PostgreSQL:
+  -v postgres_data:/var/lib/postgresql/data
+
+For MongoDB:
+  -v mongo_data:/data/db
+
+In compose file add at bottom:
+volumes:
+  mysql_data:
+  postgres_data:
+  mongo_data:
+
+================================================================
+VARIATION 5 - DOCKER INSTEAD OF PODMAN
+================================================================
+
+Replace every "podman" with "docker" - syntax is identical:
+
+docker network create frontend
+docker network create backend
+docker run -d --name mysql ...
+docker network connect frontend wordpress
+docker ps
+docker logs mysql
+
+================================================================
+VARIATION 6 - WRITE COMPOSE FILE INSTEAD OF COMMANDS
+================================================================
+
+--- WordPress + MySQL compose (most likely exam format) ---
+
+version: "3.8"
+
+services:
+  mysql:
+    image: mysql:8
+    container_name: mysql
+    networks:
+      - backend
+    environment:
+      MYSQL_ROOT_PASSWORD: StrongRootPass123!
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wpuser
+      MYSQL_PASSWORD: StrongPass123!
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+    restart: unless-stopped
+    # NO ports section - MySQL never exposed
+
+  wordpress:
+    image: wordpress:latest
+    container_name: wordpress
+    networks:
+      - frontend
+      - backend
+    environment:
+      WORDPRESS_DB_HOST: mysql
+      WORDPRESS_DB_NAME: wordpress
+      WORDPRESS_DB_USER: wpuser
+      WORDPRESS_DB_PASSWORD: StrongPass123!
+    ports:
+      - "8080:80"
+    depends_on:
+      - mysql
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true   # NO internet access on backend network
+
+--- PostgreSQL + App compose ---
+
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    networks:
+      - backend
+    environment:
+      POSTGRES_DB: appdb
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: StrongPass123!
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    # NO ports section
+
+  app:
+    image: wordpress:latest   # replace with actual app image
+    container_name: app
+    networks:
+      - frontend
+      - backend
+    environment:
+      DB_HOST: postgres
+      DB_NAME: appdb
+      DB_USER: appuser
+      DB_PASSWORD: StrongPass123!
+    ports:
+      - "8080:80"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true
+
+================================================================
+VARIATION 7 - CUSTOM CONTAINERFILE/DOCKERFILE
+================================================================
+
+"Build a custom image first, then deploy"
+
+FROM wordpress:latest
+RUN apt-get update && apt-get upgrade -y && apt-get clean
+ENV WORDPRESS_DB_HOST=mysql
+EXPOSE 80
+CMD ["apache2-foreground"]
+
+Build it:
+podman build -t my-wordpress:latest -f Containerfile .
+
+Then use my-wordpress:latest instead of wordpress:latest in run command.
+
+================================================================
+LO3_D - SECURITY EVALUATION (write these 5 points)
+================================================================
+
+1. NETWORK ISOLATION
+   Containers placed on separate networks ensure sensitive
+   services (databases) are never reachable from outside.
+   MySQL has no port mapping and sits only on the internal
+   backend network. Even if WordPress is compromised, MySQL
+   cannot be reached from the internet because there is no
+   route to it.
+
+2. PRINCIPLE OF LEAST PRIVILEGE
+   Each container runs only what it needs. MySQL runs as a
+   dedicated user (wpuser) with no root access granted to
+   the application. Container images contain only the
+   necessary runtime - no SSH server, no extra shell tools -
+   reducing the attack surface significantly.
+
+3. IMMUTABILITY AND CONSISTENCY
+   Container images are immutable - once built, the
+   environment cannot drift. This prevents configuration-
+   based vulnerabilities that accumulate over time on
+   traditional VMs. If a container is compromised, destroy
+   it and replace with a clean image instantly.
+
+4. PROCESS ISOLATION
+   Each container has its own PID namespace, filesystem, and
+   network namespace. A vulnerability exploited inside one
+   container cannot directly access processes or files in
+   another container or the host system.
+
+5. RAPID PATCHING
+   When a security vulnerability is found in a base image,
+   the fix is simply pulling the updated image and restarting
+   the container. No complex OS patching procedures, no
+   manual updates, no downtime risk from patching.
+
+================================================================
+KEY TERMS TO USE IN EXAM ANSWERS
+================================================================
+
+Network segmentation  = separating containers into different
+                        networks by function/trust level
+
+internal: true        = network with NO internet access,
+                        maximum isolation for backend
+
+No port mapping       = container not reachable from host
+                        or internet at all (-p flag missing)
+
+Non-root DB user      = app uses limited credentials,
+                        never MySQL/Postgres root
+
+Immutable image       = cannot be changed after build,
+                        consistent and auditable
+
+Attack surface        = everything exposed that could be
+                        exploited - containers minimize this
+
+Principle of least    = give each service only the minimum
+privilege               access it needs to function
+
+Namespace isolation   = PID, network, filesystem isolation
+                        between containers
+
+================================================================
+QUICK REFERENCE - ENV VARS PER DATABASE
+================================================================
+
+MySQL:
+  MYSQL_ROOT_PASSWORD
+  MYSQL_DATABASE
+  MYSQL_USER
+  MYSQL_PASSWORD
+  App connects: DB_HOST=mysql (container name)
+
+PostgreSQL:
+  POSTGRES_DB
+  POSTGRES_USER
+  POSTGRES_PASSWORD
+  App connects: DB_HOST=postgres (container name)
+
+MongoDB:
+  MONGO_INITDB_ROOT_USERNAME
+  MONGO_INITDB_ROOT_PASSWORD
+  MONGO_INITDB_DATABASE
+  App connects: MONGO_URI=mongodb://user:pass@mongodb:27017/db
+
+================================================================
+QUICK REFERENCE - VOLUME PATHS PER DATABASE
+================================================================
+
+MySQL:      -v mysql_data:/var/lib/mysql
+PostgreSQL: -v postgres_data:/var/lib/postgresql/data
+MongoDB:    -v mongo_data:/data/db
+WordPress:  -v wp_data:/var/www/html
+
+================================================================
+USEFUL COMMANDS DURING EXAM
+================================================================
+
+# Start compose
+podman-compose up -d
+
+# Scale
+podman-compose up --scale wordpress=3 -d
+
+# Check running containers
+podman ps
+
+# Check logs if something fails
+podman logs mysql
+podman logs wordpress
+
+# Check network connections
+podman network inspect backend
+
+# List all networks
+podman network ls
+
+# Connect container to network manually
+podman network connect frontend wordpress
+
+# Stop everything
+podman-compose down
+
+# Stop and remove volumes too
+podman-compose down -v
+
+================================================================
+END OF VARIATIONS CHEAT SHEET
+================================================================
